@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport"
+          content="width=device-width, user-scalable=no, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="ie=edge">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/dark.min.css">
+    <script type="module">
+        import hljs from 'https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/es/highlight.min.js';
+        //  and it's easy to individually load additional languages
+        import go from 'https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/es/languages/go.min.js';
+        hljs.registerLanguage('go', go);
+        // first, find all the div.code blocks
+        document.querySelectorAll('code').forEach(el => {
+            // then highlight each
+            hljs.highlightElement(el);
+        });
+    </script>
+
+    <title>Document</title>
+</head>
+<body>
+<pre><code class="language-go">package main
+
+import (
+	"canyon-schedule/db"
+	"canyon-schedule/job"
+	"context"
+	"encoding/json"
+	"fmt"
+	"github.com/gin-gonic/gin"
+	"github.com/robfig/cron/v3"
+	"net/http"
+	"time"
+)
+
+type Author struct {
+	Name  string `json:"name"`
+	Email string `json:"email"`
+}
+
+type User struct {
+	ID        int    `json:"id"`
+	Name      string `json:"name"`
+	Username  string `json:"username"`
+	AvatarURL string `json:"avatar_url"`
+	Email     string `json:"email"`
+}
+
+type Runner struct {
+	ID          int      `json:"id"`
+	Description string   `json:"description"`
+	RunnerType  string   `json:"runner_type"`
+	Active      bool     `json:"active"`
+	IsShared    bool     `json:"is_shared"`
+	Tags        []string `json:"tags"`
+}
+
+type ArtifactsFile struct {
+	FileName string `json:"filename"`
+	Size     int    `json:"size"`
+}
+
+type Build struct {
+	ID             int           `json:"id"`
+	Stage          string        `json:"stage"`
+	Name           string        `json:"name"`
+	Status         string        `json:"status"`
+	CreatedAt      time.Time     `json:"created_at"`
+	StartedAt      time.Time     `json:"started_at"`
+	FinishedAt     time.Time     `json:"finished_at"`
+	Duration       float64       `json:"duration"`
+	QueuedDuration float64       `json:"queued_duration"`
+	FailureReason  string        `json:"failure_reason"`
+	When           string        `json:"when"`
+	Manual         bool          `json:"manual"`
+	AllowFailure   bool          `json:"allow_failure"`
+	User           User          `json:"user"`
+	Runner         Runner        `json:"runner"`
+	ArtifactsFile  ArtifactsFile `json:"artifacts_file"`
+	Environment    interface{}   `json:"environment"`
+}
+
+type ObjectAttributes struct {
+	ID             int       `json:"id"`
+	IID            int       `json:"iid"`
+	Name           string    `json:"name"`
+	Ref            string    `json:"ref"`
+	Tag            bool      `json:"tag"`
+	SHA            string    `json:"sha"`
+	BeforeSHA      string    `json:"before_sha"`
+	Source         string    `json:"source"`
+	Status         string    `json:"status"`
+	DetailedStatus string    `json:"detailed_status"`
+	Stages         []string  `json:"stages"`
+	CreatedAt      time.Time `json:"created_at"`
+	FinishedAt     time.Time `json:"finished_at"`
+	Duration       int       `json:"duration"`
+	QueuedDuration int       `json:"queued_duration"`
+	Variables      []string  `json:"variables"`
+	URL            string    `json:"url"`
+}
+
+type Commit struct {
+	ID        string    `json:"id"`
+	Message   string    `json:"message"`
+	Title     string    `json:"title"`
+	Timestamp time.Time `json:"timestamp"`
+	URL       string    `json:"url"`
+	Author    Author    `json:"author"`
+}
+
+type Project struct {
+	ID                int    `json:"id"`
+	Name              string `json:"name"`
+	Description       string `json:"description"`
+	WebURL            string `json:"web_url"`
+	AvatarURL         string `json:"avatar_url"`
+	GitSSHURL         string `json:"git_ssh_url"`
+	GitHTTPURL        string `json:"git_http_url"`
+	Namespace         string `json:"namespace"`
+	VisibilityLevel   int    `json:"visibility_level"`
+	PathWithNamespace string `json:"path_with_namespace"`
+	DefaultBranch     string `json:"default_branch"`
+	CIConfigPath      string `json:"ci_config_path"`
+}
+
+type WebhookData struct {
+	ObjectKind       string           `json:"object_kind"`
+	ObjectAttributes ObjectAttributes `json:"object_attributes"`
+	MergeRequest     interface{}      `json:"merge_request"`
+	User             User             `json:"user"`
+	Project          Project          `json:"project"`
+	Commit           Commit           `json:"commit"`
+	Builds           []Build          `json:"builds"`
+}
+
+func main() {
+	crontab := cron.New(cron.WithSeconds()) //精确到秒
+	task := func() {
+		job.UpdateGitlab()
+	}
+	spec := "*/5 * * * ?" //cron表达式，每五秒一次
+	crontab.AddFunc(spec, task)
+	crontab.Start()
+
+	r := gin.Default()
+	r.POST("/webhooks", func(c *gin.Context) {
+		var data WebhookData
+
+		decoder := json.NewDecoder(c.Request.Body)
+		err := decoder.Decode(&data)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON"})
+			return
+		}
+
+		// 创建数据库客户端
+		client := db.NewClient()
+
+		// 连接到数据库
+		if err := client.Prisma.Connect(); err != nil {
+
+		}
+
+		// 在函数结束时断开数据库连接
+		defer func() {
+			if err := client.Prisma.Disconnect(); err != nil {
+				panic(err)
+			}
+		}()
+
+		ctx := context.Background()
+
+		// 将结构体转换为 JSON 格式
+		jsonData, err := json.Marshal(data.Commit)
+		if err != nil {
+			fmt.Println("转换为 JSON 失败：", err)
+			return
+		}
+
+		jsonData1, err := json.Marshal(data.Builds)
+		if err != nil {
+			fmt.Println("转换为 JSON 失败：", err)
+			return
+		}
+
+		jsonData2, err := json.Marshal(data.User)
+		if err != nil {
+			fmt.Println("转换为 JSON 失败：", err)
+			return
+		}
+		// 创建一个Post
+		_, err = client.Pipeline.CreateOne(
+			db.Pipeline.Status.Set(data.ObjectAttributes.Status),
+			db.Pipeline.Commit.Set(jsonData),
+			db.Pipeline.CommittedAt.Set(""),
+			db.Pipeline.Duration.Set(1),
+			db.Pipeline.CreatedAt.Set(""),
+			db.Pipeline.FinishedAt.Set(""),
+			db.Pipeline.ID.Set(""),
+			db.Pipeline.Ref.Set(""),
+			db.Pipeline.Sha.Set(""),
+			db.Pipeline.ProjectID.Set(1),
+			db.Pipeline.Stages.Set(jsonData1),
+			db.Pipeline.StartedAt.Set(""),
+			db.Pipeline.UpdatedAt.Set(""),
+			db.Pipeline.User.Set(jsonData2),
+			db.Pipeline.WebURL.Set(""),
+		).Exec(ctx)
+		fmt.Print(err)
+		c.JSON(http.StatusOK, gin.H{"message": "Data saved successfully"})
+	})
+	r.Run() // listen and serve on 0.0.0.0:8080 (for windows "localhost:8080")
+}
+</code></pre>
+</body>
+</html>
