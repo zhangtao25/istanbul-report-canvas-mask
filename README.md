@@ -1,0 +1,1 @@
+# istanbul-report-canvas-mask
